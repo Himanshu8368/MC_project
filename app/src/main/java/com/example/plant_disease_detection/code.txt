@@ -1,0 +1,2139 @@
+package com.example.plant_disease_detection
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.os.Bundle
+import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import androidx.navigation.NavController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import org.pytorch.IValue
+import org.pytorch.Module
+import org.pytorch.torchvision.TensorImageUtils
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import kotlin.math.exp
+import androidx.core.graphics.scale
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import android.Manifest
+import android.os.Environment
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.filled.Camera
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lightbulb
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.res.painterResource
+import com.aallam.openai.api.BetaOpenAI
+import com.aallam.openai.api.chat.ChatCompletionRequest
+import com.aallam.openai.api.chat.ChatMessage
+import com.aallam.openai.api.chat.ChatRole
+import com.aallam.openai.api.model.ModelId
+import com.aallam.openai.client.OpenAI
+import io.ktor.client.plugins.ClientRequestException
+import io.ktor.client.plugins.HttpRequestTimeoutException
+import io.ktor.client.plugins.ServerResponseException
+import com.aallam.openai.api.chat.ChatMessage as OpenAIChatMessage // Aliasing
+
+
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            PlantDiseaseDetectionTheme {
+                PlantDiseaseApp()
+            }
+        }
+    }
+}
+
+@Composable
+fun PlantDiseaseApp() {
+    // Theme state
+    var isDarkTheme by remember { mutableStateOf(false) }
+    // Detection threshold
+    var detectionThreshold by rememberSaveable { mutableStateOf(20.0f) }
+    // Add selected LLM state to be shared
+    var selectedLlmOption by rememberSaveable { mutableStateOf("offline") }  // Single source of truth
+
+    val navController = rememberNavController()
+    val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route ?: "detection"
+
+    PlantDiseaseDetectionTheme(darkTheme = isDarkTheme) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Scaffold(
+                topBar = {
+                    AppTopBar(
+                        isDarkTheme = isDarkTheme,
+                        onThemeToggle = { isDarkTheme = it }
+                    )
+                },
+                bottomBar = {
+                    BottomNavigationBar(navController, currentRoute)
+                }
+            ) { paddingValues ->
+                NavHost(
+                    navController = navController,
+                    startDestination = "detection",
+                    modifier = Modifier.padding(paddingValues)
+                ) {
+                    composable("detection") {
+                        DiseaseDetectionScreen(
+                            detectionThreshold = detectionThreshold,
+                            selectedLlmOption = selectedLlmOption,
+                            onLlmOptionSelected = { selectedLlmOption = it }
+                        )
+                    }
+                    composable("chat") {
+                        ChatScreen(
+                            selectedLlmOption = selectedLlmOption,
+                            onLlmOptionSelected = { selectedLlmOption = it }
+                        )
+                    }
+                    composable("about") {
+                        AboutScreen()
+                    }
+                    composable("how_it_works") {
+                        HowItWorksScreen()
+                    }
+                    composable("settings") {
+                        SettingsScreen(
+                            detectionThreshold = detectionThreshold,
+                            onThresholdChange = { newThreshold -> detectionThreshold = newThreshold }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AppTopBar(
+    isDarkTheme: Boolean,
+    onThemeToggle: (Boolean) -> Unit
+) {
+    TopAppBar(
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_plant_leaf),
+                    contentDescription = "Plant Leaf Icon",
+                    modifier = Modifier.size(28.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    "Plant Disease Detection",
+                    style = MaterialTheme.typography.titleLarge
+                )
+            }
+        },
+        actions = {
+            // Theme toggle button with animation
+            IconButton(
+                onClick = { onThemeToggle(!isDarkTheme) },
+                modifier = Modifier
+                    .padding(end = 8.dp)
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+            ) {
+                Icon(
+                    imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                    contentDescription = if (isDarkTheme) "Switch to Light Mode" else "Switch to Dark Mode",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface
+        ),
+        modifier = Modifier.shadow(4.dp)
+    )
+}
+
+@Composable
+fun BottomNavigationBar(
+    navController: NavController,
+    currentRoute: String
+) {
+    NavigationBar(
+        modifier = Modifier
+            .fillMaxWidth()
+            .shadow(elevation = 8.dp, shape = RectangleShape),
+        containerColor = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface
+    ) {
+        // Detection tab
+        NavigationBarItem(
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "Detection"
+                )
+            },
+            label = { Text("Detection") },
+            selected = currentRoute == "detection",
+            onClick = { navController.navigate("detection") },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = MaterialTheme.colorScheme.primary,
+                selectedTextColor = MaterialTheme.colorScheme.primary,
+                indicatorColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        )
+
+        // Chat tab
+        NavigationBarItem(
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Chat,
+                    contentDescription = "Chat"
+                )
+            },
+            label = { Text("Chat") },
+            selected = currentRoute == "chat",
+            onClick = { navController.navigate("chat") },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = MaterialTheme.colorScheme.primary,
+                selectedTextColor = MaterialTheme.colorScheme.primary,
+                indicatorColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        )
+
+        // About tab
+        NavigationBarItem(
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = "About"
+                )
+            },
+            label = { Text("About") },
+            selected = currentRoute == "about",
+            onClick = { navController.navigate("about") },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = MaterialTheme.colorScheme.primary,
+                selectedTextColor = MaterialTheme.colorScheme.primary,
+                indicatorColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        )
+
+        // How It Works tab
+        NavigationBarItem(
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Lightbulb,
+                    contentDescription = "How It Works"
+                )
+            },
+            label = { Text("How It Works") },
+            selected = currentRoute == "how_it_works",
+            onClick = { navController.navigate("how_it_works") },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = MaterialTheme.colorScheme.primary,
+                selectedTextColor = MaterialTheme.colorScheme.primary,
+                indicatorColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        )
+
+        // Settings tab
+        NavigationBarItem(
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Settings"
+                )
+            },
+            label = { Text("Settings") },
+            selected = currentRoute == "settings",
+            onClick = { navController.navigate("settings") },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = MaterialTheme.colorScheme.primary,
+                selectedTextColor = MaterialTheme.colorScheme.primary,
+                indicatorColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        )
+    }
+}
+
+@Composable
+fun DiseaseDetectionScreen(
+    detectionThreshold: Float = 20.0f,
+    selectedLlmOption: String = "offline",
+    onLlmOptionSelected: (String) -> Unit = {}
+) {
+    // State for image selection
+    val context = LocalContext.current
+    var imageUri by remember { mutableStateOf<Uri?>(null) }
+    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var isAnalyzing by remember { mutableStateOf(false) }
+    var detectionResults by remember { mutableStateOf<DetectionResult?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
+
+    // Permission state
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    // Gallery image picker launcher
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        imageUri = uri
+        if (uri != null) {
+            try {
+                val inputStream = context.contentResolver.openInputStream(uri)
+                bitmap = BitmapFactory.decodeStream(inputStream)
+                detectionResults = null // Reset results when new image is selected
+            } catch (e: IOException) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // File for storing camera photo
+    val photoFile = remember { mutableStateOf<File?>(null) }
+
+    // Camera launcher
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success && imageUri != null) {
+            try {
+                val stream = context.contentResolver.openInputStream(imageUri!!)
+                bitmap = BitmapFactory.decodeStream(stream)
+                stream?.close()
+                detectionResults = null // Reset results when new image is selected
+            } catch (e: Exception) {
+                Log.e("Camera", "Error loading photo: ${e.message}")
+            }
+        }
+    }
+
+    // Function to create temp file and launch camera
+    val launchCamera: () -> Unit = {
+        try {
+            // Create the temp file
+            val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+            val storageDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES)
+
+            val photoFile = File.createTempFile(
+                "JPEG_${timeStamp}_",
+                ".jpg",
+                storageDir
+            ).apply {
+                // Save the file path for later use
+                Log.d("Camera", "Created file at ${this.absolutePath}")
+            }
+
+            // Get URI for the file using FileProvider
+            imageUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                photoFile
+            )
+            cameraLauncher.launch(imageUri!!)
+        } catch (e: Exception) {
+            Log.e("Camera", "Error creating photo file: ${e.message}")
+        }
+    }
+
+    // Request camera permission launcher
+    val requestPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasCameraPermission = isGranted
+        if (isGranted) {
+            // If permission was just granted, try to launch camera
+            launchCamera()
+        }
+    }
+
+    // UI implementation
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(scrollState),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // Attractive header with card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "Detect",
+                    modifier = Modifier
+                        .size(48.dp)
+                        .padding(bottom = 8.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Upload or capture a plant leaf image to identify diseases",
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+
+        // LLM Selector with improved UI
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Choose AI Model",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                LlmSelector(
+                    selectedOption = selectedLlmOption,
+                    onOptionSelected = onLlmOptionSelected
+                )
+            }
+        }
+
+        // Image selection buttons
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Select Image Source",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    // Gallery button
+                    Button(
+                        onClick = { galleryLauncher.launch("image/*") },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondary
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp)
+                            .height(50.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.PhotoLibrary,
+                                contentDescription = "Gallery",
+                                modifier = Modifier.padding(end = 8.dp)
+                            )
+                            Text("Gallery")
+                        }
+                    }
+
+                    // Camera button
+                    Button(
+                        onClick = {
+                            if (hasCameraPermission) {
+                                launchCamera()
+                            } else {
+                                requestPermissionLauncher.launch(Manifest.permission.CAMERA)
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.tertiary
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 8.dp)
+                            .height(50.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Camera,
+                                contentDescription = "Camera",
+                                modifier = Modifier.padding(end = 8.dp)
+                            )
+                            Text("Camera")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Display selected image
+        bitmap?.let { bmp ->
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                shape = RoundedCornerShape(16.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Selected Image",
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .size(250.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .border(
+                                width = 2.dp,
+                                color = MaterialTheme.colorScheme.primary,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                    ) {
+                        Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = "Selected plant leaf",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(
+                        onClick = {
+                            if (!isAnalyzing) {
+                                isAnalyzing = true
+                                coroutineScope.launch {
+                                    try {
+                                        detectionResults = detectDisease(context, bmp)
+                                    } finally {
+                                        isAnalyzing = false
+                                    }
+                                }
+                            }
+                        },
+                        enabled = !isAnalyzing,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = "Detect Disease",
+                                modifier = Modifier.padding(end = 8.dp)
+                            )
+                            Text(
+                                "Detect Disease",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Loading indicator
+        if (isAnalyzing) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                shape = RoundedCornerShape(16.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(24.dp)
+                        .fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(48.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        strokeWidth = 4.dp
+                    )
+
+                    Text(
+                        text = "Analyzing image...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 16.dp)
+                    )
+                }
+            }
+        }
+
+        // Display results
+        detectionResults?.let { results ->
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                shape = RoundedCornerShape(16.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Detection Results",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    DetectionResultsDisplay(results, selectedLlmOption, detectionThreshold)
+                }
+            }
+        }
+
+        // Show info if no image is selected
+        if (bitmap == null) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                shape = RoundedCornerShape(16.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    SupportedPlantsInfo()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun LlmSelector(selectedOption: String, onOptionSelected: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val options = mapOf(
+        "offline" to "Offline Mode (No LLM)",
+        "openai" to "OpenAI (General AI)",
+        "llama2" to "Llama-2-7b",
+        "phi2" to "Phi-2 (Lightweight)"
+    )
+
+    Column {
+        Text(
+            "LLM Selection:",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(bottom = 4.dp)
+        )
+
+        Button(
+            onClick = { expanded = true },
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+        ) {
+            Text(options[selectedOption] ?: "Select LLM")
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { (key, name) ->
+                DropdownMenuItem(
+                    text = { Text(name) },
+                    onClick = {
+                        onOptionSelected(key)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@SuppressLint("DefaultLocale")
+@Composable
+fun DetectionResultsDisplay(
+    results: DetectionResult,
+    llmOption: String,
+    threshold: Float = 20.0f  // Use the passed threshold instead of hardcoding
+) {
+//    val threshold = 20.0f // Default detection threshold
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(
+                text = "Detection Results",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+
+            if (results.topPrediction.confidence < threshold) {
+                // Low confidence warning
+                Text(
+                    text = "❌ Unable to Recognize Disease",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    text = "The model's confidence is ${String.format("%.2f", results.topPrediction.confidence)}%, " +
+                            "which is below the recognition threshold of $threshold%.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "Tips for Better Detection:",
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text("• Make sure the leaf is in focus")
+                        Text("• Avoid glare or shadows")
+                        Text("• Capture more of the affected area")
+                        Text("• Use a uniform background if possible")
+                    }
+                }
+            } else {
+                // Display top prediction
+                Text(
+                    text = "Detected Disease: ${formatDiseaseName(results.topPrediction.className)}",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+
+                // Confidence bar
+                LinearProgressIndicator(
+                    progress = results.topPrediction.confidence / 100f,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .padding(vertical = 4.dp)
+                )
+
+                Text(
+                    text = "Confidence: ${String.format("%.2f", results.topPrediction.confidence)}%",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+                // Alternative possibilities
+                Text(
+                    text = "Alternative Possibilities",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+
+                results.alternatives.forEach { prediction ->
+                    Text("• ${formatDiseaseName(prediction.className)}: ${String.format("%.2f", prediction.confidence)}%")
+                }
+
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+                // Treatment advice
+                Text(
+                    text = "Treatment Advisory",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                val adviceText = getAdvice(results.topPrediction.className, llmOption)
+
+                MarkdownText(
+                    markdown = adviceText,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+
+                // Download button would be implemented differently on mobile
+                OutlinedButton(
+                    onClick = { /* Save as PDF functionality would be implemented here */ },
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Save Treatment Plan")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SupportedPlantsInfo() {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(
+                text = "Supported Plants",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = "This system can detect diseases in various plants including:",
+                modifier = Modifier.padding(top = 8.dp)
+            )
+
+            Text("• Fruit plants (Apple, Grape, Orange, Peach, Strawberry)")
+            Text("• Vegetables (Potato, Tomato, Pepper, Squash, Corn)")
+            Text("• Crops (Rice, Wheat, Soybean, Cotton)")
+
+            Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+            Text(
+                text = "How to Get Best Results",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text("• Take clear photos in good lighting")
+            Text("• Focus on affected leaves or parts")
+            Text("• Include multiple affected areas in the image")
+            Text("• Avoid shadows and glare")
+        }
+    }
+}
+
+@Composable
+fun AboutScreen() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Text(
+            text = "About This Project",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+
+        Text(
+            text = "Plant Disease Detection with AI",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = "This application uses deep learning to detect plant diseases from images. It combines:",
+            modifier = Modifier.padding(vertical = 8.dp)
+        )
+
+        Text("1. Convolutional Neural Networks (CNN) trained on 50+ plant species and their diseases")
+        Text("2. Transfer Learning with ResNet50 architecture for improved accuracy")
+        Text("3. Natural Language Processing (NLP) to provide detailed treatment recommendations")
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = "Data Source",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = "The model was trained on the Plant Village dataset containing thousands of images across multiple plant species and disease categories.",
+            modifier = Modifier.padding(vertical = 8.dp)
+        )
+
+        Text(
+            text = "LLM Integration",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+
+        Text(
+            text = "This application leverages state-of-the-art language models to provide personalized treatment advice:",
+            modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
+        )
+
+        Text("• Multiple LLM Options: Choose between different language models based on your needs")
+        Text("• Local LLM Support: Models run directly on your device")
+        Text("• Offline Fallback: Even without internet access, the system provides reliable advice")
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = "Future Updates",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text("• Integration with weather data for contextualized advice")
+        Text("• Region-specific treatment recommendations")
+        Text("• Disease progression prediction")
+        Text("• Camera integration for direct capture")
+    }
+}
+
+@Composable
+fun HowItWorksScreen() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Text(
+            text = "How It Works",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+
+        Text(
+            text = "Machine Learning Pipeline",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = "This application uses a sophisticated AI pipeline to detect plant diseases:",
+            modifier = Modifier.padding(vertical = 8.dp)
+        )
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "1. Image Processing",
+                    fontWeight = FontWeight.Bold
+                )
+                Text("• Your uploaded image is resized and normalized")
+                Text("• Data augmentation techniques improve model robustness")
+            }
+        }
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "2. Disease Detection",
+                    fontWeight = FontWeight.Bold
+                )
+                Text("• A CNN-based neural network analyzes the image")
+                Text("• The model was trained on 38 disease classes across different plants")
+                Text("• Transfer learning improves accuracy even with limited training data")
+            }
+        }
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "3. Advisory System",
+                    fontWeight = FontWeight.Bold
+                )
+                Text("• Language Models generate contextual treatment advice")
+                Text("• Multiple LLM options available based on your needs")
+                Text("• Recommendations include organic and chemical treatment options")
+                Text("• Preventive measures and best practices are provided")
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = "Technologies Used",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text("• PyTorch Mobile: On-device inference")
+        Text("• Kotlin & Jetpack Compose: Modern Android UI")
+        Text("• Transformers: NLP models for treatment recommendations")
+        Text("• Transfer Learning: Leveraging pre-trained neural networks")
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = "Technical Performance",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text("• Model Accuracy: ~96% on test dataset")
+        Text("• Inference Time: 0.5-1.0 seconds per image on modern devices")
+        Text("• Support for 38+ different plant disease categories")
+    }
+}
+
+@Composable
+fun SettingsScreen(detectionThreshold: Float = 20.0f, onThresholdChange: (Float) -> Unit = {}) {
+//    var detectionThreshold by remember { mutableStateOf(20.0f) }
+    var isAdvancedMode by remember { mutableStateOf(false) }
+    var isCachingEnabled by remember { mutableStateOf(true) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Text(
+            text = "Application Settings",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+
+        // Detection Settings
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Detection Settings",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text("Detection confidence threshold (%)")
+                Slider(
+                    value = detectionThreshold,
+                    onValueChange = { onThresholdChange(it) }, // Use the callback to update the parent state
+                    valueRange = 10f..90f,
+                    steps = 16,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
+                Text(
+                    text = "${detectionThreshold.toInt()}%",
+                    modifier = Modifier.align(Alignment.End)
+                )
+                Text(
+                    text = "Minimum confidence level required to confirm disease detection",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            }
+        }
+
+        // LLM Settings
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "LLM Configuration",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Advanced Mode")
+                    Switch(
+                        checked = isAdvancedMode,
+                        onCheckedChange = { isAdvancedMode = it }
+                    )
+                }
+
+                Text(
+                    text = "Enables expanded treatment advice with technical details",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            }
+        }
+
+        // Cache Settings
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Cache Settings",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Enable Caching")
+                    Switch(
+                        checked = isCachingEnabled,
+                        onCheckedChange = { isCachingEnabled = it }
+                    )
+                }
+
+                Text(
+                    text = "Stores detection results and advice for faster access",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Button(
+                    onClick = { /* Clear cache logic */ },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Clear Advice Cache")
+                }
+            }
+        }
+
+        // Model Information
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Model Information",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text("Model: PlantDiseaseModel v1.0")
+                Text("Classes: 45 plant diseases")
+                Text("Framework: PyTorch Mobile")
+                Text("Size: 25MB")
+            }
+        }
+    }
+}
+
+@Composable
+fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
+    // Simple Markdown implementation for the app
+    // In a production app, you'd use a library like Markwon
+
+    Column(modifier = modifier) {
+        val sections = markdown.split("#").drop(1)
+
+        sections.forEach { section ->
+            val lines = section.trim().split("\n")
+            val headerLine = lines.firstOrNull() ?: ""
+            val contentLines = lines.drop(1)
+
+            // Headers
+            val headerLevel = headerLine.takeWhile { it == '#' }.length + 1
+            val headerText = headerLine.trimStart('#', ' ')
+
+            when (headerLevel) {
+                1 -> Text(
+                    text = headerText,
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                )
+                2 -> Text(
+                    text = headerText,
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 12.dp, bottom = 6.dp)
+                )
+                3 -> Text(
+                    text = headerText,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                )
+                else -> Text(
+                    text = headerText,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                )
+            }
+
+            // Content
+            contentLines.forEach { line ->
+                val trimmedLine = line.trim()
+                if (trimmedLine.startsWith("- ") || trimmedLine.startsWith("* ")) {
+                    Text(
+                        text = "• ${trimmedLine.substring(2)}",
+                        modifier = Modifier.padding(start = 16.dp, top = 2.dp, bottom = 2.dp)
+                    )
+                } else if (trimmedLine.startsWith("1. ")) {
+                    // Handle numbered lists
+                    Text(
+                        text = trimmedLine,
+                        modifier = Modifier.padding(start = 16.dp, top = 2.dp, bottom = 2.dp)
+                    )
+                } else if (trimmedLine.isEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                } else {
+                    Text(
+                        text = trimmedLine,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+// Plant disease detection function using PyTorch Mobile
+suspend fun detectDisease(context: Context, bitmap: Bitmap): DetectionResult {
+    return withContext(Dispatchers.IO) {
+        try {
+            // Load the PyTorch model
+            val model = loadModel(context)
+
+            // Load class names
+            val classNames = loadClassNames(context)
+
+            // Prepare the image - resize to 128x128 and normalize
+            val resizedBitmap = bitmap.scale(128, 128)
+
+            // Normalize the image (mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+            val inputTensor = TensorImageUtils.bitmapToFloat32Tensor(
+                resizedBitmap,
+                floatArrayOf(0.5f, 0.5f, 0.5f),
+                floatArrayOf(0.5f, 0.5f, 0.5f)
+            )
+
+            // Forward pass
+            val outputTensor = model.forward(IValue.from(inputTensor)).toTensor()
+            val scores = outputTensor.dataAsFloatArray
+
+            // Convert to probabilities using softmax
+            val probabilities = softmax(scores)
+
+            // Get top 3 predictions
+            val topIndices = getTopKIndices(probabilities, 3)
+
+            // Create result
+            val topPredictions = topIndices.mapIndexed { index, classIndex ->
+                DiseaseClassPrediction(
+                    className = classNames[classIndex],
+                    confidence = probabilities[classIndex] * 100f
+                )
+            }
+
+            DetectionResult(
+                topPrediction = topPredictions[0],
+                alternatives = topPredictions.drop(1)
+            )
+        } catch (e: Exception) {
+            Log.e("PlantDisease", "Error during disease detection", e)
+
+            // Return a fallback result in case of error
+            DetectionResult(
+                topPrediction = DiseaseClassPrediction("Unknown", 0f),
+                alternatives = emptyList()
+            )
+        }
+    }
+}
+
+// Helper function to load the PyTorch model
+private fun loadModel(context: Context): Module {
+    try {
+        // Check if model already exists in app files directory
+        val modelFile = File(context.filesDir, "plant_disease_model.pt")
+
+        if (!modelFile.exists()) {
+            // Copy model from assets to app files directory
+            context.assets.open("plant_disease_model.pt").use { inputStream ->
+                FileOutputStream(modelFile).use { outputStream ->
+                    val buffer = ByteArray(4 * 1024)
+                    var read: Int
+                    while (inputStream.read(buffer).also { read = it } != -1) {
+                        outputStream.write(buffer, 0, read)
+                    }
+                }
+            }
+        }
+
+        // Load the model
+        return Module.load(modelFile.absolutePath)
+    } catch (e: IOException) {
+        Log.e("PlantDisease", "Error loading model", e)
+        throw e
+    }
+}
+
+// Load class names from JSON file in assets
+private fun loadClassNames(context: Context): List<String> {
+    try {
+//        val json = context.assets.open("plant_disease_classes.json").bufferedReader().use {
+        val json = context.assets.open("class_names.json").bufferedReader().use {
+            it.readText()
+        }
+
+        val classesJson = JSONObject(json)
+        val classNames = mutableListOf<String>()
+
+        val keys = classesJson.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val className = classesJson.getString(key)
+            classNames.add(className)
+        }
+
+        return classNames
+    } catch (e: Exception) {
+        Log.e("PlantDisease", "Error loading class names", e)
+        // Return default class names if there's an error
+        return listOf(
+            "Apple___Apple_scab",
+            "Apple___Black_rot",
+            "Apple___Cedar_apple_rust",
+            "Apple___healthy",
+            "Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot",
+            "Corn_(maize)___Common_rust",
+            "Corn_(maize)___Northern_Leaf_Blight",
+            "Corn_(maize)___healthy",
+            "Grape___Black_rot",
+            "Grape___Esca_(Black_Measles)",
+            "Grape___Leaf_blight_(Isariopsis_Leaf_Spot)",
+            "Grape___healthy",
+            "Potato___Early_blight",
+            "Potato___Late_blight",
+            "Potato___healthy",
+            "Tomato___Bacterial_spot",
+            "Tomato___Early_blight",
+            "Tomato___Late_blight",
+            "Tomato___Leaf_Mold",
+            "Tomato___Septoria_leaf_spot",
+            "Tomato___Spider_mites Two-spotted_spider_mite",
+            "Tomato___Target_Spot",
+            "Tomato___Tomato_Yellow_Leaf_Curl_Virus",
+            "Tomato___Tomato_mosaic_virus",
+            "Tomato___healthy"
+        )
+    }
+}
+
+// Softmax function to convert raw scores to probabilities
+fun softmax(scores: FloatArray): FloatArray {
+    val max = scores.maxOrNull() ?: 0f
+    val exp = FloatArray(scores.size) { i -> exp(scores[i] - max).toFloat() }
+    val sum = exp.sum()
+    return FloatArray(exp.size) { i -> exp[i] / sum }
+}
+
+// Get indices of top K values
+fun getTopKIndices(array: FloatArray, k: Int): List<Int> {
+    return array.withIndex()
+        .sortedByDescending { it.value }
+        .take(k)
+        .map { it.index }
+}
+
+// Function to format disease name for display
+fun formatDiseaseName(rawName: String): String {
+    return try {
+        // Split by underscore
+        val parts = rawName.split("___")
+        val plant = parts[0].replace("_", " ")
+        val condition = parts[1].replace("_", " ")
+
+        if (condition.equals("healthy", ignoreCase = true)) {
+            "$plant - Healthy"
+        } else {
+            "$plant - $condition"
+        }
+    } catch (e: Exception) {
+        // If there's any error in formatting, return the original
+        rawName
+    }
+}
+
+// Get treatment advice based on disease class and LLM option
+fun getAdvice(diseaseClass: String, llmOption: String): String {
+    // Basic advice templates
+    val basicAdvice = when {
+        diseaseClass.contains("Apple___Apple_scab") -> """
+            # Apple Scab Treatment
+
+            ## Immediate Actions
+            - Remove and destroy infected leaves and fruit
+            - Apply fungicide specifically labeled for apple scab
+            - Ensure proper spacing between trees for air circulation
+
+            ## Preventive Measures
+            - Plant resistant varieties when possible
+            - Clean up fallen leaves in autumn
+            - Prune trees to improve air circulation
+            - Apply preventive fungicide in early spring
+        """.trimIndent()
+
+        diseaseClass.contains("Tomato___Early_blight") -> """
+            # Tomato Early Blight Treatment
+
+            ## Immediate Actions
+            - Remove infected leaves immediately
+            - Apply copper-based fungicide or approved organic alternatives
+            - Avoid overhead watering
+
+            ## Preventive Measures
+            - Use mulch to prevent soil splash
+            - Rotate crops annually
+            - Ensure adequate plant spacing
+            - Use drip irrigation instead of sprinklers
+        """.trimIndent()
+
+        diseaseClass.contains("Potato___Late_blight") -> """
+            # Potato Late Blight Treatment
+
+            ## Immediate Actions
+            - Remove infected plants completely
+            - Apply copper-based fungicides promptly
+            - Destroy severely infected plants
+
+            ## Preventive Measures
+            - Plant certified disease-free seed potatoes
+            - Provide good drainage
+            - Avoid overhead irrigation
+            - Space plants for good air circulation
+        """.trimIndent()
+
+        diseaseClass.contains("Corn_(maize)___Common_rust") -> """
+            # Corn Common Rust Treatment
+
+            ## Immediate Actions
+            - Apply appropriate fungicide at first sign of infection
+            - Monitor the crop regularly for spread
+
+            ## Preventive Measures
+            - Plant rust-resistant corn varieties
+            - Avoid overhead irrigation
+            - Practice crop rotation
+            - Plant early in the season when possible
+        """.trimIndent()
+
+        diseaseClass.contains("Grape___Black_rot") -> """
+            # Grape Black Rot Treatment
+
+            ## Immediate Actions
+            - Remove infected fruits and leaves
+            - Apply appropriate fungicides
+            - Ensure proper canopy management
+
+            ## Preventive Measures
+            - Prune vines for good air circulation
+            - Remove mummified fruits from vines and ground
+            - Apply preventive fungicide sprays before rainfall
+            - Consider resistant varieties for new plantings
+        """.trimIndent()
+
+        diseaseClass.contains("healthy") -> """
+            # Healthy Plant Care
+
+            ## Maintenance Tips
+            - Continue regular monitoring for early signs of disease
+            - Maintain proper watering schedule
+            - Apply balanced fertilizer as recommended for the plant type
+            - Practice good sanitation around plants
+
+            ## Preventive Measures
+            - Rotate crops annually
+            - Maintain proper spacing between plants
+            - Apply mulch to conserve moisture and reduce weeds
+            - Periodically inspect the undersides of leaves
+        """.trimIndent()
+
+        else -> """
+            # Treatment Recommendations
+
+            ## General Actions
+            - Remove infected plant parts promptly
+            - Apply appropriate fungicide or bactericide depending on the disease
+            - Ensure adequate spacing between plants
+            - Avoid overhead watering
+
+            ## Preventive Measures
+            - Practice crop rotation
+            - Clean garden tools between use
+            - Use disease-resistant varieties when available
+            - Monitor plants regularly for early signs of disease
+        """.trimIndent()
+    }
+
+    // If offline mode selected, return basic advice
+    if (llmOption == "offline") {
+        return basicAdvice
+    }
+
+    // In a real implementation, this would call the selected LLM
+    // For now, return enhanced advice based on LLM selection
+    val llmEnhancement = when (llmOption) {
+        "llama2" -> """
+            ## Advanced Care (Llama-2 Analysis)
+
+            Our analysis suggests this disease typically develops under these conditions:
+            - Temperature: 15-24°C (59-75°F)
+            - Humidity: Above 85% for extended periods
+            - Poor air circulation
+
+            ### Chemical Control Options
+            - For organic production: Copper-based fungicides, sulfur preparations
+            - For conventional methods: Propiconazole, Mancozeb, or Chlorothalonil-based products
+
+            ### Biological Treatments
+            - Bacillus subtilis treatments may provide suppression
+            - Compost teas with beneficial microorganisms
+
+            ### Soil Health Recommendations
+            - Test soil pH and adjust if necessary
+            - Add appropriate soil amendments to improve drainage
+        """.trimIndent()
+
+        "phi2" -> """
+            ## Phi-2 Smart Analysis
+
+            Disease progression prediction:
+            - Without treatment: 65% likelihood of severe crop impact
+            - With proper treatment: 85% control effectiveness
+
+            ### Environmental Factors
+            - Weather conditions in your area suggest increased vigilance
+            - Adjust treatment timing based on local forecast
+
+            ### Organic Alternatives
+            - Neem oil application (5ml/L water) every 7-10 days
+            - Compost tea foliar spray weekly
+            - Milk spray (40% milk, 60% water) can reduce spread
+        """.trimIndent()
+
+        else -> ""
+    }
+
+    // Combine basic advice with LLM enhancement
+    return if (llmOption != "offline") {
+        "$basicAdvice\n\n$llmEnhancement"
+    } else {
+        basicAdvice
+    }
+}
+
+// Data classes for disease detection results
+data class DiseaseClassPrediction(
+    val className: String,
+    val confidence: Float
+)
+
+data class DetectionResult(
+    val topPrediction: DiseaseClassPrediction,
+    val alternatives: List<DiseaseClassPrediction>
+)
+
+// Theme for the application
+@Composable
+fun PlantDiseaseDetectionTheme(
+    darkTheme: Boolean = false,
+    content: @Composable () -> Unit
+) {
+    val colorScheme = if (darkTheme) {
+        darkColorScheme(
+            // Primary colors
+            primary = Color(0xFF81C784),         // Light green
+            onPrimary = Color(0xFF0C2100),       // Very dark green, almost black
+            primaryContainer = Color(0xFF1E3B20), // Dark green container
+            onPrimaryContainer = Color(0xFFAEDFB2), // Light green text on container
+
+            // Secondary colors
+            secondary = Color(0xFF55CD85),       // Teal green
+            onSecondary = Color(0xFF0C2317),     // Very dark teal
+            secondaryContainer = Color(0xFF223A2D), // Dark teal container
+            onSecondaryContainer = Color(0xFFA6EBCB), // Light teal text on container
+
+            // Tertiary colors
+            tertiary = Color(0xFF76D1FF),        // Blue accent
+            onTertiary = Color(0xFF0B2530),      // Dark blue
+            tertiaryContainer = Color(0xFF1E3543), // Dark blue container
+            onTertiaryContainer = Color(0xFFB7E7FF), // Light blue text on container
+
+            // Background and surface colors
+            background = Color(0xFF121212),      // Standard dark background
+            onBackground = Color(0xFFE0E0E0),    // Light text on background
+            surface = Color(0xFF1A1A1A),         // Slightly lighter surface
+            onSurface = Color(0xFFE0E0E0),       // Light text on surface
+            surfaceVariant = Color(0xFF232323),  // Variant surface
+            onSurfaceVariant = Color(0xFFCFCFCF), // Light text on surface variant
+
+            // Error colors
+            error = Color(0xFFE57373),           // Lighter red for dark theme
+            onError = Color(0xFF0F0404),         // Very dark red, almost black
+            errorContainer = Color(0xFF3B1515),  // Dark red container
+            onErrorContainer = Color(0xFFF5B0B0), // Light red text on container
+
+            // Other
+            outline = Color(0xFF6E6E6E),         // Medium gray outline
+            outlineVariant = Color(0xFF4A4A4A),  // Darker gray outline variant
+            scrim = Color(0xCC000000),           // Transparent black scrim
+
+            // Inversions
+            inversePrimary = Color(0xFF4CAF50),  // Light theme primary
+            inverseSurface = Color(0xFFE6E6E6),  // Light surface
+            inverseOnSurface = Color(0xFF303030)  // Dark text on light surface
+        )
+    } else {
+        lightColorScheme(
+            // Primary colors
+            primary = Color(0xFF2E7D32),         // Rich green
+            onPrimary = Color(0xFFFFFFFF),       // White text on primary
+            primaryContainer = Color(0xFFB8E5B9), // Light green container
+            onPrimaryContainer = Color(0xFF0C2100), // Very dark green text on container
+
+            // Secondary colors
+            secondary = Color(0xFF00897B),       // Teal
+            onSecondary = Color(0xFFFFFFFF),     // White text on secondary
+            secondaryContainer = Color(0xFFB2E8DF), // Light teal container
+            onSecondaryContainer = Color(0xFF00352D), // Very dark teal text on container
+
+            // Tertiary colors
+            tertiary = Color(0xFF0288D1),        // Blue
+            onTertiary = Color(0xFFFFFFFF),      // White text on tertiary
+            tertiaryContainer = Color(0xFFCCE9FF), // Light blue container
+            onTertiaryContainer = Color(0xFF004B70), // Dark blue text on container
+
+            // Background and surface colors
+            background = Color(0xFFF8F8F8),      // Very light gray background
+            onBackground = Color(0xFF1C1C1C),    // Almost black text on background
+            surface = Color(0xFFFFFFFF),         // White surface
+            onSurface = Color(0xFF1C1C1C),       // Almost black text on surface
+            surfaceVariant = Color(0xFFEEEEEE),  // Light gray surface variant
+            onSurfaceVariant = Color(0xFF444444), // Dark gray text on surface variant
+
+            // Error colors
+            error = Color(0xFFD32F2F),           // Rich red for light theme
+            onError = Color(0xFFFFFFFF),         // White text on error
+            errorContainer = Color(0xFFFFDAD6),  // Light red container
+            onErrorContainer = Color(0xFF410002), // Very dark red text on container
+
+            // Other
+            outline = Color(0xFF737373),         // Medium gray outline
+            outlineVariant = Color(0xFFBDBDBD),  // Lighter gray outline variant
+            scrim = Color(0x80000000),           // Translucent black scrim
+
+            // Inversions
+            inversePrimary = Color(0xFF81C784),  // Dark theme primary
+            inverseSurface = Color(0xFF1C1C1C),  // Dark surface
+            inverseOnSurface = Color(0xFFECECEC)  // Light text on dark surface
+        )
+    }
+
+    // Define typography that works well with both themes
+    val typography = Typography(
+        titleLarge = TextStyle(
+            fontFamily = FontFamily.Default,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 22.sp,
+            lineHeight = 28.sp,
+            letterSpacing = 0.sp
+        ),
+        titleMedium = TextStyle(
+            fontFamily = FontFamily.Default,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 18.sp,
+            lineHeight = 24.sp,
+            letterSpacing = 0.sp
+        ),
+        titleSmall = TextStyle(
+            fontFamily = FontFamily.Default,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 16.sp,
+            lineHeight = 22.sp,
+            letterSpacing = 0.sp
+        ),
+        bodyLarge = TextStyle(
+            fontFamily = FontFamily.Default,
+            fontWeight = FontWeight.Normal,
+            fontSize = 16.sp,
+            lineHeight = 24.sp,
+            letterSpacing = 0.sp
+        ),
+        bodyMedium = TextStyle(
+            fontFamily = FontFamily.Default,
+            fontWeight = FontWeight.Normal,
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
+            letterSpacing = 0.sp
+        ),
+        bodySmall = TextStyle(
+            fontFamily = FontFamily.Default,
+            fontWeight = FontWeight.Normal,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            letterSpacing = 0.sp
+        ),
+        labelLarge = TextStyle(
+            fontFamily = FontFamily.Default,
+            fontWeight = FontWeight.Medium,
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
+            letterSpacing = 0.sp
+        )
+    )
+
+    MaterialTheme(
+        colorScheme = colorScheme,
+        typography = typography,
+        content = content
+    )
+}
+
+
+// 4. Create data classes for chat messages
+data class ChatMessage(
+    val text: String,
+    val isFromUser: Boolean,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+data class AppChatMessage(
+    val text: String,
+    val isFromUser: Boolean,
+    val timestamp: Long = System.currentTimeMillis()
+)
+// 5. Create the ChatScreen composable
+@OptIn(BetaOpenAI::class)
+@Composable
+fun ChatScreen(
+    selectedLlmOption: String,
+    onLlmOptionSelected: (String) -> Unit
+) {
+    var messageText by remember { mutableStateOf("") }
+    var isProcessing by remember { mutableStateOf(false) }
+    var chatMessages by remember {
+        mutableStateOf<List<AppChatMessage>>(emptyList())
+    }
+    val coroutineScope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    val context = LocalContext.current
+
+    LaunchedEffect(chatMessages.size) {
+        if (chatMessages.isNotEmpty()) {
+            listState.animateScrollToItem(chatMessages.size - 1)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (chatMessages.isEmpty()) {
+            chatMessages = listOf(
+                AppChatMessage(
+                    text = "Hi there! I'm your plant assistant. How can I help you today?",
+                    isFromUser = false
+                )
+            )
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "AI Assistant",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+            LlmSelector(selectedLlmOption, onLlmOptionSelected)
+        }
+
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            state = listState,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(chatMessages) { message ->
+                ChatMessageItem(message)
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = messageText,
+                onValueChange = { messageText = it },
+                modifier = Modifier.weight(1f).padding(end = 8.dp),
+                placeholder = { Text("Type a message...") },
+                maxLines = 3,
+                enabled = !isProcessing
+            )
+
+            Button(
+                onClick = {
+                    if (messageText.isNotBlank() && !isProcessing) {
+                        val userMessage = AppChatMessage(
+                            text = messageText.trim(),
+                            isFromUser = true
+                        )
+                        chatMessages = chatMessages + userMessage
+                        messageText = ""
+                        isProcessing = true
+
+                        coroutineScope.launch {
+                            // Fixed parameter name from 'prompt' to 'query'
+                            val response = processWithLlm(
+                                query = userMessage.text,
+                                llmOption = selectedLlmOption,
+                                context = context
+                            )
+                            chatMessages = chatMessages + AppChatMessage(
+                                text = response,
+                                isFromUser = false
+                            )
+                            isProcessing = false
+                        }
+                    }
+                },
+                enabled = messageText.isNotBlank() && !isProcessing,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary
+                )
+            ) {
+                Text("Send")
+            }
+        }
+
+        if (isProcessing) {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            )
+        }
+    }
+}
+// 6. Chat message item composable
+@Composable
+fun ChatMessageItem(message: AppChatMessage) {
+    val backgroundColor = if (message.isFromUser) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.secondaryContainer
+    }
+
+    val alignment = if (message.isFromUser) {
+        Alignment.CenterEnd  // Combines vertical center + horizontal end
+    } else {
+        Alignment.CenterStart // Combines vertical center + horizontal start
+    }
+
+    val textColor = if (message.isFromUser) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    }
+
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = alignment
+    ) {
+        Card(
+            modifier = Modifier.widthIn(max = 300.dp),
+            shape = RoundedCornerShape(8.dp),
+            colors = CardDefaults.cardColors(containerColor = backgroundColor)
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp)
+            ) {
+                Text(
+                    text = message.text,
+                    color = textColor,
+                    style = MaterialTheme.typography.bodyLarge
+                )
+
+                // Display timestamp
+                val formatter = SimpleDateFormat("h:mm a", Locale.getDefault())
+                val timeString = formatter.format(Date(message.timestamp))
+
+                Text(
+                    text = timeString,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = textColor.copy(alpha = 0.7f),
+                    modifier = Modifier
+                        .align(Alignment.End)
+                        .padding(top = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+// 7. Function to process messages with the selected LLM
+// This simulates sending the query to the selected LLM model
+
+@OptIn(BetaOpenAI::class)
+suspend fun processWithLlm(
+    query: String,  // This should be the first parameter
+    llmOption: String,
+    context: Context
+): String {
+    return withContext(Dispatchers.IO) {
+        try {
+            val isPlantQuestion = isPlantRelated(query)
+
+            when {
+                llmOption == "openai" || !isPlantQuestion -> {
+                    val openAIService = OpenAIService(BuildConfig.OPENAI_API_KEY)
+                    val chatCompletionRequest = ChatCompletionRequest(
+                        model = ModelId("gpt-3.5-turbo"),
+                        messages = listOf(
+                            ChatMessage( // Using fully qualified name
+                                role = ChatRole.System,
+                                content = "You are a helpful plant assistant..."
+                            ),
+                            ChatMessage( // Using fully qualified name
+                                role = ChatRole.User,
+                                content = query
+                            )
+                        )
+                    )
+                    val completion = openAIService.openAI.chatCompletion(chatCompletionRequest)
+                    completion.choices.firstOrNull()?.message?.content ?: "No response"
+                }
+                else -> {
+                    // Implement proper plant type detection
+                    val plantType = detectPlantTypeFromQuery(query)
+                    getPlantSpecificResponse(query, plantType)
+                }
+            }
+        } catch (e: Exception) {
+            // Add detailed error logging
+            Log.e("ChatError", "API call failed", e)
+            when (e) {
+                is HttpRequestTimeoutException -> "Request timed out. Check your connection."
+                is ClientRequestException -> "Server error. Please try again later."
+                is ServerResponseException -> "Service unavailable. Try again later."
+                else -> "Sorry, I'm having trouble responding. Please try again later."
+            }
+        }
+    }
+}
+
+
+// Added missing implementation
+private fun detectPlantTypeFromQuery(query: String): String? {
+    val plantKeywords = mapOf(
+        "tomato" to listOf("tomato", "tomatoes"),
+        "rose" to listOf("rose", "roses"),
+        "apple" to listOf("apple tree", "apple"),
+        "corn" to listOf("corn", "maize")
+    )
+
+    return plantKeywords.entries.firstOrNull { (_, keywords) ->
+        keywords.any { query.contains(it, ignoreCase = true) }
+    }?.key
+}
+
+// Enhanced response function
+private fun getPlantSpecificResponse(query: String, plantType: String?): String {
+    return when {
+        plantType != null -> {
+            when (plantType.lowercase()) {
+                "tomato" -> "Tomato-specific advice: Ensure proper spacing (24-36 inches), water at the base..."
+                "rose" -> "Rose care tips: Prune dead canes in early spring, watch for black spot fungus..."
+                "apple" -> "Apple tree maintenance: Prune annually for air circulation, watch for fire blight..."
+                "corn" -> "Corn growing tips: Plant in blocks for pollination, watch for corn borers..."
+                else -> "General plant advice: Ensure proper sunlight and watering for healthy growth."
+            }
+        }
+        query.contains("disease", ignoreCase = true) -> "For disease identification, please use the detection screen."
+        else -> "I can help with plant care questions. Ask me about specific plants or gardening tips!"
+    }
+}
+
+private fun isPlantRelated(query: String): Boolean {
+    val plantKeywords = listOf("plant", "leaf", "disease", "crop", "soil", "fertilize", "water", "photosynthesis")
+    return plantKeywords.any { query.contains(it, ignoreCase = true) }
+}
+
+
+
+@OptIn(BetaOpenAI::class)
+class OpenAIService(private val apiKey: String) {
+    internal val openAI by lazy { OpenAI(apiKey) }
+
+    suspend fun getChatResponse(prompt: String): String = withContext(Dispatchers.IO) {
+        try {
+            val chatCompletionRequest = ChatCompletionRequest(
+                model = ModelId("gpt-3.5-turbo"), // Wrap in ModelId
+                messages = listOf(
+                    ChatMessage(
+                        role = ChatRole.System,
+                        content = "You are a helpful assistant that helps with both plant disease questions " +
+                                "and general queries. For plant-specific questions, keep answers technical. " +
+                                "For other questions, be friendly and helpful."
+                    ),
+                    ChatMessage(
+                        role = ChatRole.User,
+                        content = prompt
+                    )
+                )
+            )
+
+            val completion = openAI.chatCompletion(chatCompletionRequest)
+            completion.choices.firstOrNull()?.message?.content ?: "I'm sorry, I couldn't generate a response."
+        } catch (e: Exception) {
+            "Error: ${e.message ?: "Unknown error occurred"}"
+        }
+    }
+}
+
+
+
+
